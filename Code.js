@@ -24,19 +24,19 @@ function populateDropdown() {
 
   // Determines the last row with data in each column to avoid blanks in the dropdown list
   var lastRowLastNames = sheet
-    .getRange("TENTATIVE!B:B")
+    .getRange("TENTATIVE-Version2!B:B")
     .getValues()
     .filter(String).length;
   var lastRowFirstNames = sheet
-    .getRange("TENTATIVE!C:C")
+    .getRange("TENTATIVE-Version2!C:C")
     .getValues()
     .filter(String).length;
   var lastRowIds = sheet
-    .getRange("TENTATIVE!D:D")
+    .getRange("TENTATIVE-Version2!D:D")
     .getValues()
     .filter(String).length;
   var lastRowGrades = sheet
-    .getRange("TENTATIVE!E:E")
+    .getRange("TENTATIVE-Version2!E:E")
     .getValues()
     .filter(String).length;
 
@@ -50,19 +50,19 @@ function populateDropdown() {
 
   // Retrieves the values only up to the last row and handles empty cells by including them
   var lastNames = sheet
-    .getRange("TENTATIVE!B2:B" + lastRow)
+    .getRange("TENTATIVE-Version2!B2:B" + lastRow)
     .getValues()
     .map((row) => row[0] || "");
   var firstNames = sheet
-    .getRange("TENTATIVE!C2:C" + lastRow)
+    .getRange("TENTATIVE-Version2!C2:C" + lastRow)
     .getValues()
     .map((row) => row[0] || "");
   var ids = sheet
-    .getRange("TENTATIVE!D2:D" + lastRow)
+    .getRange("TENTATIVE-Version2!D2:D" + lastRow)
     .getValues()
     .map((row) => row[0] || "");
   var grades = sheet
-    .getRange("TENTATIVE!E2:E" + lastRow)
+    .getRange("TENTATIVE-Version2!E2:E" + lastRow)
     .getValues()
     .map((row) => row[0] || "");
 
