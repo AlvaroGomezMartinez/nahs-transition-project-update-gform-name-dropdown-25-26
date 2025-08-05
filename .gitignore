@@ -1,0 +1,42 @@
+# Google Apps Script Project - .gitignore
+
+# Node modules (if using clasp with npm)
+node_modules/
+package-lock.json
+yarn.lock
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+*.tmp
+
+# Google Apps Script specific
+.clasp.json
+.claspignore
+
+# Logs and debug files
+*.log
+debug.log
+
+# Environment and configuration files
+.env
+.env.local
+.env.production
+config.local.js
+
+# Backup files
+*.backup
+*.bak
+*_backup.*
+
+# Temporary files
+temp/
+tmp/
+*.temp
