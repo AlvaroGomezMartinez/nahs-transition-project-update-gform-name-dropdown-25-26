@@ -166,8 +166,7 @@ For technical issues:
 **Alvaro Gomez**  
 Academic Technology Coach  
 Email: alvaro.gomez@nisd.net  
-Office: +1-210-363-1577  
-Mobile: +1-210-363-1577  
+Office: +1-210-397-9408  
 
 ## License
 
