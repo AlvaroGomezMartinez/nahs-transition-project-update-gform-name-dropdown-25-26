@@ -182,3 +182,9 @@ If `populateDropdown()` throws an unhandled error, it sends an email to the acco
 - **v2.1.0** (2026-05-13) — Moved IDs to Script Properties, split DevTools into separate file, removed unused scopes and Drive advanced service
 - **v2.0.0** (2025-08-05) — Major refactoring with improved error handling, modular architecture, and JSDoc documentation
 - **v1.0.0** (2024-12-10) — Initial implementation
+
+---
+
+## Related
+
+- [nahs-25-26-student-transition-notes](https://github.com/AlvaroGomezMartinez/nahs-25-26-student-transition-notes) — bound script on the Google Sheet that this form feeds into
