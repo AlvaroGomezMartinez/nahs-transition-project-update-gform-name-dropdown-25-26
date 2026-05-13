@@ -1,5 +1,3 @@
-# Google Apps Script Project - .gitignore
-
 # Node modules (if using clasp with npm)
 node_modules/
 package-lock.json
@@ -18,7 +16,7 @@ Thumbs.db
 *.tmp
 
 # Google Apps Script specific
-.clasp.json
+# Note: .clasp.json is intentionally tracked so clasp works after cloning
 .claspignore
 
 # Logs and debug files

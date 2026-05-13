@@ -1,14 +1,35 @@
 /**
- * NAHS Student Transition Form Dropdown Manager
- * 
- * This script automatically populates the student dropdown in the Google Form
- * '25-26 AEP Transition Plan - Academic & Behavioral Progress Teacher Notes'
- * with student data from the NAHS Student Transition Notes spreadsheet.
+ * @fileoverview NAHS Student Transition Form Dropdown Manager
  *
- * @author Alvaro Gomez <alvaro.gomez@nisd.net>
- * @version 2.0.0
- * @since 2024-12-10
- * @updated 2025-08-05
+ * Automatically populates the student name dropdown in the Google Form
+ * "AEP Transition Plan - Academic & Behavioral Progress Teacher Notes"
+ * with current student data pulled from the NAHS Student Transition Notes
+ * spreadsheet. Intended to run on a time-based trigger.
+ *
+ * Required Script Properties (set via Project Settings → Script Properties):
+ *   - FORM_ID           : ID of the target Google Form
+ *   - FORM_QUESTION_ID  : Numeric ID of the dropdown question in the form
+ *   - SPREADSHEET_ID    : ID of the source Google Spreadsheet
+ *
+ */
+
+// =============================================================================
+// TYPES
+// =============================================================================
+
+/**
+ * @typedef {Object} StudentRecord
+ * @property {string} lastName  - Student's last name (required)
+ * @property {string} firstName - Student's first name (required)
+ * @property {string} studentId - Student's ID number (optional)
+ * @property {string} grade     - Student's grade level (optional)
+ */
+
+/**
+ * @typedef {Object} Config
+ * @property {{ID: string, QUESTION_ID: string}} FORM
+ * @property {{ID: string, SHEET_NAME: string, DATA_START_ROW: number, COLUMNS: Object}} SPREADSHEET
+ * @property {{MAX_RETRIES: number, RETRY_DELAY_MS: number}} PROCESSING
  */
 
 // =============================================================================
@@ -16,57 +37,93 @@
 // =============================================================================
 
 /**
- * Configuration object containing all form and spreadsheet IDs
- * @const {Object}
+ * Builds the runtime configuration object from Script Properties.
+ *
+ * Script Properties must be set manually via
+ * Project Settings → Script Properties in the Apps Script UI.
+ *
+ * @returns {Config} The populated configuration object
+ * @throws {Error} If any required Script Property is missing
  */
-const CONFIG = {
-  // Google Form configuration
-  FORM: {
-    ID: "1V9mjRuavk-5d-nmtfoOouLas5f-DuztLb8InpxLijyk",
-    QUESTION_ID: "516226695"
-  },
-  
-  // Spreadsheet configuration
-  SPREADSHEET: {
-    ID: "14-nvlNOLWebnJJOQNZPnglWx0OuE5U-_xEbXGodND6E",
-    SHEET_NAME: "TENTATIVE-Version2",
-    DATA_START_ROW: 2,
-    COLUMNS: {
-      LAST_NAME: 1,   // Column B (0-indexed from data range start)
-      FIRST_NAME: 2,  // Column C
-      STUDENT_ID: 3,  // Column D
-      GRADE: 4        // Column E
-    }
-  },
-  
-  // Processing configuration
-  PROCESSING: {
-    MAX_RETRIES: 3,
-    RETRY_DELAY_MS: 1000,
-    BATCH_SIZE: 500
+function getConfig() {
+  const props = PropertiesService.getScriptProperties();
+
+  const formId        = props.getProperty('FORM_ID');
+  const questionId    = props.getProperty('FORM_QUESTION_ID');
+  const spreadsheetId = props.getProperty('SPREADSHEET_ID');
+
+  if (!formId || !questionId || !spreadsheetId) {
+    throw new Error(
+      'Missing required Script Properties. ' +
+      'Add FORM_ID, FORM_QUESTION_ID, and SPREADSHEET_ID via ' +
+      'Project Settings → Script Properties in the Apps Script UI.'
+    );
   }
-};
+
+  return {
+    FORM: {
+      ID:          formId,
+      QUESTION_ID: questionId
+    },
+    SPREADSHEET: {
+      ID:            spreadsheetId,
+      SHEET_NAME:    'TENTATIVE-Version2',
+      DATA_START_ROW: 2,
+      COLUMNS: {
+        LAST_NAME:  1, // Column B
+        FIRST_NAME: 2, // Column C
+        STUDENT_ID: 3, // Column D
+        GRADE:      4  // Column E
+      }
+    },
+    PROCESSING: {
+      MAX_RETRIES:    3,
+      RETRY_DELAY_MS: 1000
+    }
+  };
+}
+
+/** @type {Config} Loaded once at startup from Script Properties. */
+const CONFIG = getConfig();
+
+// =============================================================================
+// CUSTOM ERROR CLASSES
+// =============================================================================
 
 /**
- * Custom error class for form operations
+ * Thrown when a Google Form operation fails.
+ *
+ * @extends Error
  */
 class FormOperationError extends Error {
+  /**
+   * @param {string} message       - Human-readable error description
+   * @param {string} operation     - Name of the operation that failed
+   * @param {Error|null} originalError - Underlying error, if any
+   */
   constructor(message, operation, originalError = null) {
     super(message);
-    this.name = 'FormOperationError';
-    this.operation = operation;
+    this.name          = 'FormOperationError';
+    this.operation     = operation;
     this.originalError = originalError;
   }
 }
 
 /**
- * Custom error class for spreadsheet operations
+ * Thrown when a Google Sheets operation fails.
+ *
+ * @extends Error
  */
 class SpreadsheetOperationError extends Error {
+  /**
+   * @param {string} message       - Human-readable error description
+   * @param {string} operation     - Name of the operation that failed
+   * @param {Error|null} originalError - Underlying error, if any
+   */
   constructor(message, operation, originalError = null) {
     super(message);
-    this.name = 'SpreadsheetOperationError';
-    this.operation = operation;
+    this.name          = 'SpreadsheetOperationError';
+    this.operation     = operation;
     this.originalError = originalError;
   }
 }
@@ -76,415 +133,306 @@ class SpreadsheetOperationError extends Error {
 // =============================================================================
 
 /**
- * Main function that populates the dropdown with student data
- * This function is designed to be called by time-based triggers
- * 
- * @returns {boolean} True if successful, false otherwise
+ * Orchestrates the full dropdown update cycle:
+ * fetch student data → process → write to form.
+ *
+ * This is the function that should be attached to a time-based trigger.
+ * On failure, an email notification is sent to the script owner and the
+ * function returns false rather than throwing, so the trigger is not disabled.
+ *
+ * @returns {boolean} True if the dropdown was updated successfully, false otherwise
  */
 function populateDropdown() {
   const startTime = new Date();
-  
+
   try {
     console.log('Starting dropdown population process...');
-    
-    // Get student data from spreadsheet
+
     const studentData = getStudentData();
-    
+
     if (!studentData || studentData.length === 0) {
       console.warn('No student data found. Dropdown will be cleared.');
       return updateFormDropdown([]);
     }
-    
-    // Process and format student data
+
     const formattedChoices = processStudentData(studentData);
-    
-    // Update the form dropdown
-    const success = updateFormDropdown(formattedChoices);
-    
+    const success          = updateFormDropdown(formattedChoices);
+
     const duration = (new Date() - startTime) / 1000;
-    console.log(`Dropdown population completed in ${duration} seconds. ` +
-                `Processed ${studentData.length} records, ` +
-                `created ${formattedChoices.length} unique choices.`);
-    
+    console.log(
+      `Dropdown population completed in ${duration}s. ` +
+      `Processed ${studentData.length} records, ` +
+      `created ${formattedChoices.length} unique choices.`
+    );
+
     return success;
-    
+
   } catch (error) {
     console.error('Failed to populate dropdown:', error);
-    
-    // Send notification email for critical failures
     notifyOnError(error);
-    
     return false;
   }
 }
 
 // =============================================================================
-// DATA RETRIEVAL FUNCTIONS
+// DATA RETRIEVAL
 // =============================================================================
 
 /**
- * Retrieves student data from the configured spreadsheet
- * 
- * @returns {Array<Array>} Raw student data from spreadsheet
- * @throws {SpreadsheetOperationError} If unable to access spreadsheet or sheet
+ * Opens the configured spreadsheet and returns all student data rows
+ * as a 2-D array of raw cell values (columns B–E, starting at DATA_START_ROW).
+ *
+ * @returns {Array<Array<*>>} Raw cell values; empty array if the sheet has no data rows
+ * @throws {SpreadsheetOperationError} If the spreadsheet or sheet cannot be accessed
  */
 function getStudentData() {
   try {
-    console.log(`Opening spreadsheet: ${CONFIG.SPREADSHEET.ID}`);
-    
     const spreadsheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET.ID);
-    const sheet = spreadsheet.getSheetByName(CONFIG.SPREADSHEET.SHEET_NAME);
-    
+    const sheet       = spreadsheet.getSheetByName(CONFIG.SPREADSHEET.SHEET_NAME);
+
     if (!sheet) {
       throw new SpreadsheetOperationError(
-        `Sheet "${CONFIG.SPREADSHEET.SHEET_NAME}" not found`,
+        `Sheet "${CONFIG.SPREADSHEET.SHEET_NAME}" not found.`,
         'getSheet'
       );
     }
-    
-    // Validate sheet has data
+
     const lastRow = sheet.getLastRow();
     if (lastRow < CONFIG.SPREADSHEET.DATA_START_ROW) {
-      console.warn('Sheet appears to be empty or has no data rows');
+      console.warn('Sheet appears to be empty or has no data rows.');
       return [];
     }
-    
-    // Calculate data range
+
     const numRows = lastRow - CONFIG.SPREADSHEET.DATA_START_ROW + 1;
     const numCols = Math.max(...Object.values(CONFIG.SPREADSHEET.COLUMNS));
-    
-    console.log(`Reading ${numRows} rows and ${numCols} columns starting from row ${CONFIG.SPREADSHEET.DATA_START_ROW}`);
-    
-    // Get data range (columns B through E)
-    const dataRange = sheet.getRange(
-      CONFIG.SPREADSHEET.DATA_START_ROW, 
-      2, // Start from column B
-      numRows, 
-      numCols
-    );
-    
-    const data = dataRange.getValues();
-    console.log(`Retrieved ${data.length} rows of data`);
-    
+
+    console.log(`Reading ${numRows} rows × ${numCols} columns from row ${CONFIG.SPREADSHEET.DATA_START_ROW}.`);
+
+    const data = sheet
+      .getRange(CONFIG.SPREADSHEET.DATA_START_ROW, 2, numRows, numCols)
+      .getValues();
+
+    console.log(`Retrieved ${data.length} rows.`);
     return data;
-    
+
   } catch (error) {
-    if (error instanceof SpreadsheetOperationError) {
-      throw error;
-    }
-    
-    throw new SpreadsheetOperationError(
-      'Failed to retrieve student data from spreadsheet',
-      'getData',
-      error
-    );
+    if (error instanceof SpreadsheetOperationError) throw error;
+    throw new SpreadsheetOperationError('Failed to retrieve student data.', 'getData', error);
   }
 }
 
 // =============================================================================
-// DATA PROCESSING FUNCTIONS
+// DATA PROCESSING
 // =============================================================================
 
 /**
- * Processes raw student data and formats it for the dropdown
- * 
- * @param {Array<Array>} rawData - Raw data from spreadsheet
- * @returns {Array<string>} Formatted and sorted student choices
+ * Converts raw spreadsheet rows into a sorted, deduplicated array of
+ * dropdown choice strings. Rows that fail validation are skipped and logged.
+ *
+ * @param {Array<Array<*>>} rawData - 2-D array of raw cell values from the spreadsheet
+ * @returns {Array<string>} Alphabetically sorted, unique choice strings
  */
 function processStudentData(rawData) {
-  console.log(`Processing ${rawData.length} raw data rows...`);
-  
-  const choices = new Set();
-  let validRecords = 0;
-  let skippedRecords = 0;
-  
+  console.log(`Processing ${rawData.length} rows...`);
+
+  const choices        = new Set();
+  let   validRecords   = 0;
+  let   skippedRecords = 0;
+
   rawData.forEach((row, index) => {
     try {
       const student = parseStudentRecord(row, index);
-      
+
       if (!student) {
         skippedRecords++;
         return;
       }
-      
-      const formattedName = formatStudentChoice(student);
-      
-      if (formattedName && isValidStudentChoice(formattedName)) {
-        choices.add(formattedName);
-        validRecords++;
-      } else {
-        console.warn(`Row ${index + CONFIG.SPREADSHEET.DATA_START_ROW}: Invalid formatted name: "${formattedName}"`);
-        skippedRecords++;
-      }
-      
+
+      choices.add(formatStudentChoice(student));
+      validRecords++;
+
     } catch (error) {
       console.error(`Row ${index + CONFIG.SPREADSHEET.DATA_START_ROW}: Error processing record:`, error);
       skippedRecords++;
     }
   });
-  
-  // Convert to sorted array
-  const sortedChoices = Array.from(choices).sort((a, b) => 
+
+  const sortedChoices = Array.from(choices).sort((a, b) =>
     a.localeCompare(b, 'en', { sensitivity: 'base' })
   );
-  
-  console.log(`Processing complete: ${validRecords} valid, ${skippedRecords} skipped, ${sortedChoices.length} unique choices`);
-  
+
+  console.log(`Done: ${validRecords} valid, ${skippedRecords} skipped, ${sortedChoices.length} unique choices.`);
+
   return sortedChoices;
 }
 
 /**
- * Parses a single student record from spreadsheet row
- * 
- * @param {Array} row - Single row of data from spreadsheet
- * @param {number} index - Row index for logging
- * @returns {Object|null} Parsed student object or null if invalid
+ * Parses a single spreadsheet row into a {@link StudentRecord}.
+ *
+ * Returns null (without throwing) for rows that should be silently skipped:
+ * - Fully empty rows
+ * - Rows missing a first or last name
+ *
+ * @param {Array<*>} row   - Raw cell values for one spreadsheet row
+ * @param {number}   index - Zero-based index of this row within rawData (used for log messages)
+ * @returns {StudentRecord|null} Parsed student object, or null if the row should be skipped
  */
 function parseStudentRecord(row, index) {
+  const cols    = CONFIG.SPREADSHEET.COLUMNS;
   const student = {
-    lastName: sanitizeField(row[CONFIG.SPREADSHEET.COLUMNS.LAST_NAME - 1]),
-    firstName: sanitizeField(row[CONFIG.SPREADSHEET.COLUMNS.FIRST_NAME - 1]),
-    studentId: sanitizeField(row[CONFIG.SPREADSHEET.COLUMNS.STUDENT_ID - 1]),
-    grade: sanitizeField(row[CONFIG.SPREADSHEET.COLUMNS.GRADE - 1])
+    lastName:  sanitizeField(row[cols.LAST_NAME  - 1]),
+    firstName: sanitizeField(row[cols.FIRST_NAME - 1]),
+    studentId: sanitizeField(row[cols.STUDENT_ID - 1]),
+    grade:     sanitizeField(row[cols.GRADE      - 1])
   };
-  
-  // Check if record has any meaningful data
+
+  // Silently skip fully empty rows (common at the bottom of a sheet)
   if (!student.lastName && !student.firstName && !student.studentId && !student.grade) {
-    console.log(`Row ${index + CONFIG.SPREADSHEET.DATA_START_ROW}: Skipped (all fields empty)`);
     return null;
   }
-  
-  // Validate required fields
+
+  // Warn and skip rows that have some data but are missing required name fields
   if (!student.lastName || !student.firstName) {
-    console.warn(`Row ${index + CONFIG.SPREADSHEET.DATA_START_ROW}: Missing required name fields`);
+    console.warn(`Row ${index + CONFIG.SPREADSHEET.DATA_START_ROW}: Missing required name fields — skipped.`);
     return null;
   }
-  
+
   return student;
 }
 
 /**
- * Sanitizes and normalizes field data
- * 
- * @param {*} value - Raw field value
- * @returns {string} Sanitized string value
+ * Coerces a raw cell value to a clean, single-spaced string.
+ * Returns an empty string for null, undefined, or whitespace-only values.
+ *
+ * @param {*} value - Raw value from a spreadsheet cell
+ * @returns {string} Trimmed, normalized string
  */
 function sanitizeField(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  
+  if (value === null || value === undefined) return '';
   return value.toString().trim().replace(/\s+/g, ' ');
 }
 
 /**
- * Formats student data into dropdown choice string
- * 
- * @param {Object} student - Student object with name, ID, and grade
- * @returns {string} Formatted choice string
+ * Formats a {@link StudentRecord} into the dropdown choice string shown to form respondents.
+ *
+ * Format: "LastName, FirstName (StudentID) Grade: X"
+ * StudentID and Grade are omitted when not present.
+ *
+ * @param {StudentRecord} student - Validated student record
+ * @returns {string} Formatted choice string, e.g. "Smith, Jane (12345) Grade: 10"
  */
 function formatStudentChoice(student) {
-  const parts = [
-    `${student.lastName}, ${student.firstName}`
-  ];
-  
-  if (student.studentId) {
-    parts.push(`(${student.studentId})`);
-  }
-  
-  if (student.grade) {
-    parts.push(`Grade: ${student.grade}`);
-  }
-  
+  const parts = [`${student.lastName}, ${student.firstName}`];
+  if (student.studentId) parts.push(`(${student.studentId})`);
+  if (student.grade)     parts.push(`Grade: ${student.grade}`);
   return parts.join(' ');
 }
 
-/**
- * Validates a formatted student choice string
- * 
- * @param {string} choice - Formatted choice string
- * @returns {boolean} True if valid
- */
-function isValidStudentChoice(choice) {
-  return choice && 
-         choice.length > 0 && 
-         choice.length <= 200 && // Reasonable length limit
-         choice.includes(','); // Must have comma for "Last, First" format
-}
-
 // =============================================================================
-// FORM UPDATE FUNCTIONS
+// FORM UPDATE
 // =============================================================================
 
 /**
- * Updates the Google Form dropdown with new choices
- * 
- * @param {Array<string>} choices - Array of formatted student choices
- * @returns {boolean} True if successful
- * @throws {FormOperationError} If unable to update form
+ * Replaces all choices in the configured form dropdown with the provided list.
+ * Passing an empty array clears the dropdown.
+ *
+ * Uses {@link retryOperation} to handle transient API failures.
+ *
+ * @param {Array<string>} choices - Formatted choice strings to write to the form
+ * @returns {boolean} True if the update succeeded
+ * @throws {FormOperationError} If the form item cannot be found, is the wrong type,
+ *                              or the update fails after all retries
  */
 function updateFormDropdown(choices) {
   try {
-    console.log(`Opening form: ${CONFIG.FORM.ID}`);
-    
-    const form = FormApp.openById(CONFIG.FORM.ID);
-    const formItem = form.getItemById(CONFIG.FORM.QUESTION_ID);
-    
+    const form     = FormApp.openById(CONFIG.FORM.ID);
+    const formItem = form.getItemById(Number(CONFIG.FORM.QUESTION_ID));
+
     if (!formItem) {
       throw new FormOperationError(
-        `Form item with ID ${CONFIG.FORM.QUESTION_ID} not found`,
+        `Form item with ID ${CONFIG.FORM.QUESTION_ID} not found.`,
         'getFormItem'
       );
     }
-    
+
     if (formItem.getType() !== FormApp.ItemType.LIST) {
       throw new FormOperationError(
         `Form item is not a dropdown/list type. Found: ${formItem.getType()}`,
         'validateItemType'
       );
     }
-    
-    const dropdownItem = formItem.asListItem();
-    
-    // Update choices with retry logic
+
     return retryOperation(() => {
-      dropdownItem.setChoiceValues(choices);
-      console.log(`Successfully updated dropdown with ${choices.length} choices`);
+      formItem.asListItem().setChoiceValues(choices);
+      console.log(`Dropdown updated with ${choices.length} choices.`);
       return true;
     }, 'updateDropdown');
-    
+
   } catch (error) {
-    if (error instanceof FormOperationError) {
-      throw error;
-    }
-    
-    throw new FormOperationError(
-      'Failed to update form dropdown',
-      'updateForm',
-      error
-    );
+    if (error instanceof FormOperationError) throw error;
+    throw new FormOperationError('Failed to update form dropdown.', 'updateForm', error);
   }
 }
 
 // =============================================================================
-// UTILITY FUNCTIONS
+// UTILITIES
 // =============================================================================
 
 /**
- * Retry wrapper for operations that might fail temporarily
- * 
- * @param {Function} operation - Function to retry
- * @param {string} operationName - Name for logging
- * @returns {*} Result of successful operation
+ * Executes a function, retrying on failure up to CONFIG.PROCESSING.MAX_RETRIES times.
+ * Waits CONFIG.PROCESSING.RETRY_DELAY_MS milliseconds between attempts.
+ *
+ * @param {function(): *} operation     - Zero-argument function to execute
+ * @param {string}        operationName - Label used in log and error messages
+ * @returns {*} The return value of the first successful call
+ * @throws {Error} If all retry attempts fail, with the last error message included
  */
 function retryOperation(operation, operationName) {
   let lastError;
-  
+
   for (let attempt = 1; attempt <= CONFIG.PROCESSING.MAX_RETRIES; attempt++) {
     try {
       return operation();
     } catch (error) {
       lastError = error;
-      console.warn(`${operationName} attempt ${attempt} failed:`, error.message);
-      
+      console.warn(`${operationName} attempt ${attempt} failed: ${error.message}`);
       if (attempt < CONFIG.PROCESSING.MAX_RETRIES) {
-        console.log(`Retrying in ${CONFIG.PROCESSING.RETRY_DELAY_MS}ms...`);
         Utilities.sleep(CONFIG.PROCESSING.RETRY_DELAY_MS);
       }
     }
   }
-  
-  throw new Error(`${operationName} failed after ${CONFIG.PROCESSING.MAX_RETRIES} attempts. Last error: ${lastError.message}`);
+
+  throw new Error(
+    `${operationName} failed after ${CONFIG.PROCESSING.MAX_RETRIES} attempts. ` +
+    `Last error: ${lastError.message}`
+  );
 }
 
 /**
- * Sends error notification email for critical failures
- * 
- * @param {Error} error - The error that occurred
+ * Sends a failure notification email to the script owner (the account running the trigger).
+ * Logs a warning if the email itself cannot be sent, but does not throw.
+ *
+ * @param {Error} error - The error that caused the dropdown update to fail
+ * @returns {void}
  */
 function notifyOnError(error) {
   try {
     const subject = 'NAHS Form Dropdown Update Failed';
-    const body = `
-The automated dropdown update for the NAHS Student Transition Form has failed.
+    const body = [
+      'The automated dropdown update for the NAHS Student Transition Form has failed.',
+      '',
+      'Error Details:',
+      `- Type:      ${error.name      || 'Unknown'}`,
+      `- Message:   ${error.message}`,
+      `- Operation: ${error.operation || 'Unknown'}`,
+      `- Timestamp: ${new Date().toISOString()}`,
+      '',
+      'Check the Apps Script execution logs for more details.'
+    ].join('\n');
 
-Error Details:
-- Type: ${error.name || 'Unknown'}
-- Message: ${error.message}
-- Operation: ${error.operation || 'Unknown'}
-- Timestamp: ${new Date().toISOString()}
-
-Please check the Google Apps Script logs for more details and take appropriate action.
-
-This is an automated message from the NAHS Form Dropdown Manager script.
-    `.trim();
-    
-    // Send to the script owner (current user)
     GmailApp.sendEmail(Session.getActiveUser().getEmail(), subject, body);
-    
+
   } catch (emailError) {
     console.error('Failed to send error notification email:', emailError);
   }
 }
-
-// =============================================================================
-// TESTING AND DEBUGGING FUNCTIONS
-// =============================================================================
-
-/**
- * Test function to validate configuration and connections
- * Run this function manually to test the setup
- */
-function testConfiguration() {
-  console.log('Testing configuration...');
-  
-  try {
-    // Test spreadsheet access
-    const spreadsheet = SpreadsheetApp.openById(CONFIG.SPREADSHEET.ID);
-    const sheet = spreadsheet.getSheetByName(CONFIG.SPREADSHEET.SHEET_NAME);
-    console.log(`✓ Spreadsheet access successful. Sheet has ${sheet.getLastRow()} rows.`);
-    
-    // Test form access
-    const form = FormApp.openById(CONFIG.FORM.ID);
-    const formItem = form.getItemById(CONFIG.FORM.QUESTION_ID);
-    console.log(`✓ Form access successful. Question type: ${formItem.getType()}`);
-    
-    // Test data processing with small sample
-    const sampleData = sheet.getRange(2, 2, Math.min(5, sheet.getLastRow() - 1), 4).getValues();
-    const processed = processStudentData(sampleData);
-    console.log(`✓ Data processing successful. Sample output: ${processed.slice(0, 3).join(', ')}`);
-    
-    console.log('✓ All tests passed!');
-    
-  } catch (error) {
-    console.error('✗ Configuration test failed:', error);
-  }
-}
-
-/**
- * Dry run function to test processing without updating the form
- */
-function dryRun() {
-  console.log('Starting dry run (no form updates)...');
-  
-  try {
-    const studentData = getStudentData();
-    const formattedChoices = processStudentData(studentData);
-    
-    console.log('Dry run results:');
-    console.log(`- Total records processed: ${studentData.length}`);
-    console.log(`- Unique choices generated: ${formattedChoices.length}`);
-    console.log('- Sample choices:');
-    formattedChoices.slice(0, 10).forEach((choice, index) => {
-      console.log(`  ${index + 1}. ${choice}`);
-    });
-    
-    if (formattedChoices.length > 10) {
-      console.log(`  ... and ${formattedChoices.length - 10} more`);
-    }
-    
-  } catch (error) {
-    console.error('Dry run failed:', error);
-  }
-}
-
